@@ -304,6 +304,7 @@ namespace ZXPSampleCode
                 if (_alarm != 0)
                 {
                     _msg = "Device is in Alarm State";
+                    //job.ClearError();
                     return false;
                 }
                 _alarm = job.EjectCard();
@@ -717,6 +718,126 @@ namespace ZXPSampleCode
         }
         #endregion
 
+        #region Contactless Encoding Stuff
+
+        // WinSCard API's to be imported
+        [DllImport("WinScard.dll")]
+        public static extern int SCardEstablishContext(uint dwScope, int nNotUsed1,
+            int nNotUsed2, ref int phContext);
+        [DllImport("WinScard.dll")]
+        public static extern int SCardReleaseContext(int phContext);
+        [DllImport("WinScard.dll")]
+        public static extern int SCardConnect(int hContext, string cReaderName,
+            uint dwShareMode, uint dwPrefProtocol, ref int phCard, ref uint ActiveProtocol);
+        [DllImport("WinScard.dll")]
+        public static extern int SCardDisconnect(int hCard, int Disposition);
+        [DllImport("WinScard.dll")]
+        public static extern int SCardListReaderGroups(int hContext, ref string cGroups, ref int nStringSize);
+        [DllImport("WinScard.dll")]
+        public static extern int SCardListReaders(int hContext, string cGroups,
+            ref string cReaderLists, ref int nReaderCount);
+        [DllImport("WinScard.dll")]
+        public static extern int SCardFreeMemory(int hContext, string cResourceToFree);
+        [DllImport("WinScard.dll")]
+        public static extern int SCardGetAttrib(int hContext, uint dwAttrId,
+            ref byte[] bytRecvAttr, ref int nRecLen);
+        [DllImport("WinScard.dll")]
+        public static extern int SCardTransmit(int hCard, ref SCARD_IO_REQUEST pioSendRequest, 
+            ref byte SendBuff, int SendBuffLen, ref SCARD_IO_REQUEST pioRecvRequest, out byte RecvBuff, ref Int32 RecvBuffLen);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SCARD_IO_REQUEST
+        {
+            public uint dwProtocol;
+            public int cbPciLength;
+        }
+
+        public void EncodeCard(ref Job job)
+        {
+            //  The goal of this program is to establish a connection with 
+            // a Mifare 4k contactless microprocessor smart card through a ZXP printer.
+
+            //Job job = new Job();
+
+            // Begin SDK communication with printer (using ZMotif SDK)
+            //string deviceSerialNumber = "06C104500004";
+            //job.Open(deviceSerialNumber);
+
+            // Move card to smart card reader and suspend ZMotif SDK control of printer (using ZMotif SDK)
+            int actionID = 0;
+            job.JobControl.SmartCardConfiguration(SideEnum.Front, SmartCardTypeEnum.MIFARE, true);
+            //job.SmartCardDataOnly(1, out actionID);
+
+            // Wait while card moves into encode position 
+            //Thread.Sleep(4000);
+
+            // Establish connection with encoder (using WinSCard.dll)
+            int encoderContext = 0;
+            SCardEstablishContext(0, 0, 0, ref encoderContext);
+
+            // At this point, call SCardListReaders to get available readers (code not included).
+            // Alternatively, refer to 'device manager >> smart card encoders' when printer is on.
+            string encoderName = "SCM Microsystems Inc. SDI010 Contactless Reader 0";
+
+            // Establish connection with card (using WinSCard.dll)
+            int cardContext = 0;
+            uint activeProtocol = 0;
+            SCardConnect(encoderContext, encoderName, 0x02, 0x02 | 0x01, ref cardContext, ref activeProtocol);
+
+            // Prepare to communicate with card.  sIO is a simple struct that contains the two elements (protocol and pciLength).
+            SCARD_IO_REQUEST sIO = new SCARD_IO_REQUEST();
+            sIO.dwProtocol = activeProtocol;
+            sIO.cbPciLength = 8;
+
+            // Choose which block to read/write
+            byte block = 0x01;
+
+            // Load key '0xFFFFFFFFFFFF' (A common default Mifare 4k key) into reader as Key A (using WinSCard.dll)
+            Console.WriteLine("Loading key into reader.");
+            byte[] key = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+            int response0Size = 2;
+            byte[] response0 = new byte[response0Size];
+            byte[] loadKeyCommand = { 0xFF, 0x82, 0x00, 0x60, (byte)key.Length, key[0], key[1], key[2], key[3], key[4], key[5] };
+            SCardTransmit(cardContext, ref sIO, ref loadKeyCommand[0], loadKeyCommand.Length, ref sIO, out response0[0], ref response0Size);
+        
+
+// Authenticate connection by recalling key A (using WinSCard.dll)
+            int response1Size = 2;
+            byte[] response1 = new byte[response1Size];
+            byte[] authenticateCmd = { 0xFF, 0x86, 0x00, 0x00, 0x05, 0x01, 0x00, block, 0x60, 0x01 };
+            SCardTransmit(cardContext, ref sIO, ref authenticateCmd[0], authenticateCmd.Length, ref sIO, out response1[0], ref response1Size);
+
+            // Mifare 4k Command to write 'HelloHelloHelloH' to card (using WinSCard.dll)
+            int response2Size = 8;
+            byte[] response2 = new byte[response2Size];
+            byte[] writeCmd = { 0xFF, 0xD6, 0x00, block, 0x10, 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x48 };
+            SCardTransmit(cardContext, ref sIO, ref writeCmd[0], writeCmd.Length, ref sIO, out response2[0], ref response2Size);
+
+            // Mifare 1k or 4k command to read card (using WinSCard.dll)
+            int response3Size = 128;
+            byte[] response3 = new byte[response3Size];
+            byte[] readCmd = { 0xFF, 0xB0, 0x00, block, 0x00 };
+            SCardTransmit(cardContext, ref sIO, ref readCmd[0], readCmd.Length, ref sIO, out response3[0], ref response3Size);
+
+            // Display the information read from the card; wait for user 
+            Console.WriteLine(ASCIIEncoding.ASCII.GetString(response3, 0, response3Size));
+            Console.ReadKey();
+
+            // Close connection with card (using WinSCard.dll)
+            SCardDisconnect(cardContext, 0x02);
+
+            // Release connection to encoder (using WinSCard.dll)
+            SCardReleaseContext(encoderContext);
+
+            // Resume ZMotif SDK control of printer (using ZMotif SDK)
+            job.JobResume();
+
+            // Close ZMotif SDK control of job (using ZMotif SDK)
+            //job.Close();
+        }
+
+        #endregion
+
         #region Print Graphic Samples
         private string getSerialString(string prefix, int current_sn, int digits)
         {
@@ -833,8 +954,8 @@ namespace ZXPSampleCode
 
                 //// Waits for the card to reach the smart card station
                 //// --------------------------------------------------
-                //string status = string.Empty;
-                //AtStation(ref job, actionID, 30, out status);
+                string status = string.Empty;
+                AtStation(ref job, actionID, 30, out status);
 
                 //// ***** Smart Card Code goes here *****
 
@@ -858,9 +979,9 @@ namespace ZXPSampleCode
                 //    JobResume(ref job);
                 //else
                 //    JobAbort(ref job, true);
-
-                //string status = string.Empty;
-                //JobWait(ref job, actionID, 180, out status);
+                EncodeCard(ref job);
+                status = string.Empty;
+                JobWait(ref job, actionID, 180, out status);
           
             }
             catch (Exception e)
@@ -994,8 +1115,8 @@ namespace ZXPSampleCode
 
                         //// Waits for the card to reach the smart card station
                         //// --------------------------------------------------
-                        //string status = string.Empty;
-                        //AtStation(ref job, actionID, 30, out status);
+                        string status = string.Empty;
+                        AtStation(ref job, actionID, 30, out status);
 
                         //// ***** Smart Card Code goes here *****
 
@@ -1019,9 +1140,10 @@ namespace ZXPSampleCode
                         //    JobResume(ref job);
                         //else
                         //    JobAbort(ref job, true);
-
-                        string status = string.Empty;
+                        EncodeCard(ref job);
+                        status = string.Empty;
                         JobWait(ref job, actionID, 180, out status);
+
                     }
                 }
                 else

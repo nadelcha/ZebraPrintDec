@@ -475,6 +475,7 @@ namespace ZXPSampleCode
 
                     case "Position Card":
                     case "Eject Card":
+                        
                     case "Reject Card":
                         InitializeCardListForCardMovement(_samples, ref _cardTypes);
                         InitializeCardMovementTestSelections(_samples);
